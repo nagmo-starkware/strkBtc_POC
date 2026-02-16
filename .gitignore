@@ -1,0 +1,20 @@
+# Rust
+/backend/target/
+/backend/**/*.rs.bk
+
+# Cairo / Starknet
+/contracts/target/
+
+# Environment
+.env
+.env.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
