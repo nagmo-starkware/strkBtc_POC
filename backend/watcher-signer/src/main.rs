@@ -26,13 +26,12 @@ async fn main() -> Result<()> {
     let config = Config::from_env()?;
     info!("Configuration loaded");
 
-    // Initialize Bitcoin client
+    // Initialize Bitcoin client (cloneable since it wraps Arc internally)
     let bitcoin_client = BitcoinClient::new(
         &config.bitcoin_rpc_url,
         &config.bitcoin_rpc_user,
         &config.bitcoin_rpc_password,
     )?;
-    let bitcoin_client_arc: Arc<dyn BitcoinProvider> = Arc::new(bitcoin_client.clone());
     info!("Bitcoin client initialized");
 
     // Initialize Starknet client
@@ -57,9 +56,7 @@ async fn main() -> Result<()> {
     // Spawn Bitcoin Monitor actor
     let bitcoin_monitor = BitcoinMonitorActor::new(
         config.bitcoin_multisig_address.clone(),
-        config.min_confirmations,
-        config.bitcoin_poll_interval_secs,
-        bitcoin_client_arc,
+        Arc::new(bitcoin_client.clone()),
         deposit_tx.clone(),
         config.bitcoin_poll_interval_secs,
         config.min_confirmations,
@@ -97,7 +94,7 @@ async fn main() -> Result<()> {
     let psbt_signer_config = PsbtSignerConfig::default();
     let psbt_signer = PsbtSignerActor::new(
         psbt_signer_config,
-        bitcoin_client,
+        bitcoin_client.clone(),
         starknet_client.clone(),
     );
     let psbt_signer_handle = tokio::spawn(async move {

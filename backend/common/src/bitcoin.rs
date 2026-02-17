@@ -13,6 +13,7 @@ pub trait BitcoinProvider: Send + Sync {
     async fn broadcast_transaction(&self, tx: &Transaction) -> Result<Txid>;
 }
 
+#[derive(Clone)]
 pub struct BitcoinClient {
     client: Arc<Client>,
 }
