@@ -57,6 +57,8 @@ async fn main() -> Result<()> {
     // Spawn Bitcoin Monitor actor
     let bitcoin_monitor = BitcoinMonitorActor::new(
         config.bitcoin_multisig_address.clone(),
+        config.min_confirmations,
+        config.bitcoin_poll_interval_secs,
         bitcoin_client_arc,
         deposit_tx.clone(),
     );
