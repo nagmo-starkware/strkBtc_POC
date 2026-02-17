@@ -1,0 +1,24 @@
+version: '3.8'
+
+services:
+  watcher-signer:
+    build:
+      context: .
+      dockerfile: watcher-signer/Dockerfile
+    env_file: .env
+    restart: unless-stopped
+    volumes:
+      - ./logs/watcher-signer:/app/logs
+    environment:
+      - RUST_LOG=info
+
+  broadcaster:
+    build:
+      context: .
+      dockerfile: broadcaster/Dockerfile
+    env_file: .env
+    restart: unless-stopped
+    volumes:
+      - ./logs/broadcaster:/app/logs
+    environment:
+      - RUST_LOG=info
