@@ -70,6 +70,9 @@ impl<B: BitcoinProvider, S: StarknetProvider> PsbtSignerActor<B, S> {
                     );
 
                     if let Err(e) = self.sign_withdrawal(&withdrawal).await {
+                        // TODO: Implement retry with exponential backoff for transient failures.
+                        // Failed withdrawals are currently lost — user's strkBTC is burned but BTC never sent.
+                        // Must add dead-letter queue or persistent retry store before production.
                         error!(
                             "Failed to sign withdrawal {}: {}",
                             withdrawal.request_id, e
@@ -102,6 +105,13 @@ impl<B: BitcoinProvider, S: StarknetProvider> PsbtSignerActor<B, S> {
             "Creating PSBT for withdrawal: id={}",
             withdrawal.request_id
         );
+
+        // Validate Bitcoin address before proceeding
+        use bitcoin::Address;
+        use std::str::FromStr;
+
+        let _addr = Address::from_str(&withdrawal.btc_address)
+            .map_err(|e| common::BridgeError::Other(anyhow::anyhow!("Invalid BTC address '{}': {}", withdrawal.btc_address, e)))?;
 
         // Create the PSBT (currently a stub)
         let psbt = self.create_psbt(withdrawal).await?;
@@ -266,7 +276,7 @@ mod tests {
 
         let withdrawal = FinalizedWithdrawal {
             request_id: "req1".to_string(),
-            btc_address: "bc1qtest123".to_string(),
+            btc_address: "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4".to_string(),
             amount: 50_000,
         };
 
@@ -286,7 +296,7 @@ mod tests {
 
         let withdrawal = FinalizedWithdrawal {
             request_id: "req2".to_string(),
-            btc_address: "bc1qtest456".to_string(),
+            btc_address: "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4".to_string(),
             amount: 100_000,
         };
 
@@ -309,7 +319,7 @@ mod tests {
 
         let withdrawal = FinalizedWithdrawal {
             request_id: "req3".to_string(),
-            btc_address: "bc1qtest789".to_string(),
+            btc_address: "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4".to_string(),
             amount: 75_000,
         };
 
@@ -337,7 +347,7 @@ mod tests {
         // Send a withdrawal
         let withdrawal = FinalizedWithdrawal {
             request_id: "req4".to_string(),
-            btc_address: "bc1qtest000".to_string(),
+            btc_address: "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4".to_string(),
             amount: 25_000,
         };
 
