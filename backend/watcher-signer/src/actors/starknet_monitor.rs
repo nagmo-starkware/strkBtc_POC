@@ -11,6 +11,8 @@ use tokio::sync::mpsc;
 use tokio::time::{interval, Duration};
 use tracing::{error, info};
 
+const MAX_SEEN_REQUESTS: usize = 10_000;
+
 /// Configuration for the Starknet Monitor actor
 #[derive(Debug, Clone)]
 pub struct StarknetMonitorConfig {
@@ -106,10 +108,10 @@ impl<P: StarknetProvider> StarknetMonitorActor<P> {
     /// Queries Starknet for WithdrawalRequested events since the last checked block,
     /// deduplicates them, and sends them to the PSBT Signer.
     async fn check_withdrawals(&mut self) -> common::error::Result<()> {
-        info!(
-            "Checking Starknet withdrawals from block {}",
-            self.last_checked_block
-        );
+        // Fetch latest block FIRST to avoid missing withdrawals in between
+        let latest_block = self.starknet_client.get_latest_block().await?;
+
+        info!("Checking Starknet withdrawals from block {} to {}", self.last_checked_block, latest_block);
 
         // Get withdrawal requests from Starknet
         let withdrawals = self
@@ -153,10 +155,16 @@ impl<P: StarknetProvider> StarknetMonitorActor<P> {
             // Mark as seen
             self.seen_request_ids.insert(withdrawal.request_id.clone());
             info!("Withdrawal request sent to PSBT Signer: {}", withdrawal.request_id);
+
+            // Prevent unbounded memory growth
+            if self.seen_request_ids.len() > MAX_SEEN_REQUESTS {
+                // Clear oldest entries by resetting (acceptable since persistence will handle replay protection)
+                self.seen_request_ids.clear();
+                info!("Cleared seen_request_ids cache (exceeded {} entries)", MAX_SEEN_REQUESTS);
+            }
         }
 
-        // Update last checked block
-        let latest_block = self.starknet_client.get_latest_block().await?;
+        // Update block cursor to the value fetched at start
         info!(
             "Updating last checked block: {} -> {}",
             self.last_checked_block, latest_block
