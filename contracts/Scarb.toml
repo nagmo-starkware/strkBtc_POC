@@ -6,6 +6,7 @@ edition = "2024_07"
 [dependencies]
 starknet = ">=2.6.0"
 openzeppelin = { git = "https://github.com/OpenZeppelin/cairo-contracts.git", tag = "v0.20.0" }
+starkware_utils = { git = "https://github.com/starkware-libs/starkware-starknet-utils", rev = "e1955423808045de868987b8fb0b43f5cbdf5699" }
 
 [[target.starknet-contract]]
 sierra = true
