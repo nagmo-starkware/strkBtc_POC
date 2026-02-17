@@ -72,12 +72,18 @@ impl<P: StarknetProvider> DepositProcessorActor<P> {
 
         match self.starknet_client.submit_deposit(&deposit).await {
             Ok(tx_hash) => {
+                // TODO: Poll get_transaction_receipt() to confirm the tx was included in a block.
+                // Currently we trust the submission succeeded but don't verify on-chain confirmation.
+                // A rejected/reverted tx means the deposit is lost (BTC locked, no strkBTC minted).
                 info!(
                     "Successfully submitted deposit to Starknet: txid={}, starknet_tx={:?}",
                     deposit.txid, tx_hash
                 );
             }
             Err(e) => {
+                // TODO: Implement retry with exponential backoff for transient failures.
+                // Failed deposits are currently lost — user's BTC is locked but strkBTC never minted.
+                // Must add dead-letter queue or persistent retry store before production.
                 error!(
                     "Failed to submit deposit to Starknet: txid={}, error={}",
                     deposit.txid, e
