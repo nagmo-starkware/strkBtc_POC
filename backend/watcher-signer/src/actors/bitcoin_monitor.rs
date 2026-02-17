@@ -79,7 +79,13 @@ impl BitcoinMonitorActor {
             }
 
             // Get full transaction
-            let tx = self.bitcoin_client.get_transaction(&txid).await?;
+            let tx = match self.bitcoin_client.get_transaction(&txid).await {
+                Ok(tx) => tx,
+                Err(e) => {
+                    error!("Failed to fetch transaction {}: {}", txid_str, e);
+                    continue;
+                }
+            };
 
             // Parse OP_RETURN for Starknet address
             let starknet_address = match parse_op_return(&tx)? {
@@ -127,9 +133,11 @@ impl BitcoinMonitorActor {
     }
 }
 
-// Placeholder - will implement proper calculation later
 fn calculate_deposit_amount(_tx: &bitcoin::Transaction) -> u64 {
-    100_000 // 100k sats
+    // TODO: CRITICAL - Implement actual UTXO parsing
+    // Currently returns hardcoded 100k sats regardless of actual amount
+    // This MUST be fixed before production use
+    100_000 // Placeholder
 }
 
 #[cfg(test)]

@@ -2766,7 +2766,10 @@ name = "watcher-signer"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
+ "bitcoin",
  "common",
+ "hex",
  "tokio",
  "tracing",
  "tracing-subscriber",
