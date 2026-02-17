@@ -68,14 +68,15 @@ impl StarknetProvider for StarknetBridgeClient {
     }
 }
 
-#[cfg(test)]
-mod tests {
+// Test utilities module - available in test builds for dependent crates
+#[cfg(any(test, feature = "test-utils"))]
+pub mod test_utils {
     use super::*;
 
     #[derive(Clone)]
-    struct MockStarknetProvider {
-        withdrawals: Vec<Withdrawal>,
-        latest_block: u64,
+    pub struct MockStarknetProvider {
+        pub withdrawals: Vec<Withdrawal>,
+        pub latest_block: u64,
     }
 
     #[async_trait]
@@ -96,6 +97,12 @@ mod tests {
             Ok(self.latest_block)
         }
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::test_utils::*;
+    use super::*;
 
     #[tokio::test]
     async fn test_mock_provider_returns_withdrawals() {

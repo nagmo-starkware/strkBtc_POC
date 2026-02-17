@@ -12,3 +12,7 @@ tracing-subscriber = { workspace = true }
 hex = "0.4"
 bitcoin = "0.31"
 async-trait = "0.1"
+
+[dev-dependencies]
+common = { path = "../common", features = ["test-utils"] }
+starknet = { workspace = true }

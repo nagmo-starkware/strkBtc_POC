@@ -15,3 +15,6 @@ bitcoincore-rpc = "0.18"
 starknet = { workspace = true }
 async-trait = { workspace = true }
 reqwest = { workspace = true }
+
+[features]
+test-utils = []
