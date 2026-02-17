@@ -19,6 +19,7 @@ pub trait StarknetProvider: Send + Sync {
     async fn get_latest_block(&self) -> Result<u64>;
 }
 
+#[derive(Clone)]
 pub struct StarknetBridgeClient {
     provider: Arc<JsonRpcClient<HttpTransport>>,
     #[allow(dead_code)] // Used once contract calls are implemented
