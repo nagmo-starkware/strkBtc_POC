@@ -32,11 +32,15 @@ pub struct Config {
     pub bitcoin_rpc_user: String,
     pub bitcoin_rpc_password: String,
     pub bitcoin_multisig_address: String,
+    // SECURITY TODO: Private keys should not be stored in environment variables in production.
+    // Migrate to Google Secret Manager, HashiCorp Vault, or HSM-backed key storage.
     pub bitcoin_private_key: String,
     pub min_confirmations: u32,
 
     // Starknet
     pub starknet_rpc_url: String,
+    // SECURITY TODO: Private keys should not be stored in environment variables in production.
+    // Migrate to Google Secret Manager, HashiCorp Vault, or HSM-backed key storage.
     pub signer_private_key: String,
     pub bridge_contract_address: String,
     pub registry_contract_address: String,
@@ -52,6 +56,8 @@ pub struct BroadcasterConfig {
     pub bitcoin_rpc_url: String,
     pub bitcoin_rpc_user: String,
     pub bitcoin_rpc_password: String,
+    // SECURITY TODO: Private keys should not be stored in environment variables in production.
+    // Migrate to Google Secret Manager, HashiCorp Vault, or HSM-backed key storage.
     pub bitcoin_private_key: String,
 
     // Starknet
@@ -66,7 +72,7 @@ pub struct BroadcasterConfig {
 
 impl Config {
     pub fn from_env() -> Result<Self> {
-        Ok(Self {
+        let config = Self {
             bitcoin_rpc_url: required_env("BITCOIN_RPC_URL")?,
             bitcoin_rpc_user: required_env("BITCOIN_RPC_USER")?,
             bitcoin_rpc_password: required_env("BITCOIN_RPC_PASSWORD")?,
@@ -79,13 +85,37 @@ impl Config {
             registry_contract_address: required_env("REGISTRY_CONTRACT_ADDRESS")?,
             bitcoin_poll_interval_secs: parse_positive_env("BITCOIN_POLL_INTERVAL_SECS", "600")?,
             starknet_poll_interval_secs: parse_positive_env("STARKNET_POLL_INTERVAL_SECS", "10")?,
-        })
+        };
+
+        // Validate URLs
+        if !config.bitcoin_rpc_url.starts_with("http://") && !config.bitcoin_rpc_url.starts_with("https://") {
+            return Err(BridgeError::Config("BITCOIN_RPC_URL must start with http:// or https://".to_string()));
+        }
+        if !config.starknet_rpc_url.starts_with("http://") && !config.starknet_rpc_url.starts_with("https://") {
+            return Err(BridgeError::Config("STARKNET_RPC_URL must start with http:// or https://".to_string()));
+        }
+
+        // Validate contract addresses
+        if !config.bridge_contract_address.starts_with("0x") {
+            return Err(BridgeError::Config("BRIDGE_CONTRACT_ADDRESS must start with 0x".to_string()));
+        }
+        if !config.registry_contract_address.starts_with("0x") {
+            return Err(BridgeError::Config("REGISTRY_CONTRACT_ADDRESS must start with 0x".to_string()));
+        }
+
+        tracing::info!("Config validation passed");
+        tracing::info!("Bitcoin RPC: {}", config.bitcoin_rpc_url);
+        tracing::info!("Starknet RPC: {}", config.starknet_rpc_url);
+        tracing::info!("Bridge contract: {}", config.bridge_contract_address);
+        tracing::info!("Registry contract: {}", config.registry_contract_address);
+
+        Ok(config)
     }
 }
 
 impl BroadcasterConfig {
     pub fn from_env() -> Result<Self> {
-        Ok(Self {
+        let config = Self {
             bitcoin_rpc_url: required_env("BITCOIN_RPC_URL")?,
             bitcoin_rpc_user: required_env("BITCOIN_RPC_USER")?,
             bitcoin_rpc_password: required_env("BITCOIN_RPC_PASSWORD")?,
@@ -95,6 +125,26 @@ impl BroadcasterConfig {
             signature_threshold: parse_positive_env("SIGNATURE_THRESHOLD", "3")?,
             registry_poll_interval_secs: parse_positive_env("REGISTRY_POLL_INTERVAL_SECS", "30")?,
             broadcast_check_interval_secs: parse_positive_env("BROADCAST_CHECK_INTERVAL_SECS", "60")?,
-        })
+        };
+
+        // Validate URLs
+        if !config.bitcoin_rpc_url.starts_with("http://") && !config.bitcoin_rpc_url.starts_with("https://") {
+            return Err(BridgeError::Config("BITCOIN_RPC_URL must start with http:// or https://".to_string()));
+        }
+        if !config.starknet_rpc_url.starts_with("http://") && !config.starknet_rpc_url.starts_with("https://") {
+            return Err(BridgeError::Config("STARKNET_RPC_URL must start with http:// or https://".to_string()));
+        }
+
+        // Validate contract address
+        if !config.registry_contract_address.starts_with("0x") {
+            return Err(BridgeError::Config("REGISTRY_CONTRACT_ADDRESS must start with 0x".to_string()));
+        }
+
+        tracing::info!("BroadcasterConfig validation passed");
+        tracing::info!("Bitcoin RPC: {}", config.bitcoin_rpc_url);
+        tracing::info!("Starknet RPC: {}", config.starknet_rpc_url);
+        tracing::info!("Registry contract: {}", config.registry_contract_address);
+
+        Ok(config)
     }
 }

@@ -4,7 +4,7 @@ pub mod error;
 pub mod starknet;
 pub mod types;
 
-pub use bitcoin::{parse_op_return, BitcoinClient};
+pub use bitcoin::{parse_op_return, BitcoinClient, BitcoinProvider};
 pub use config::{BroadcasterConfig, Config};
 pub use error::{BridgeError, Result};
 pub use starknet::StarknetProvider;
