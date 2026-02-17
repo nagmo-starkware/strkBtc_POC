@@ -2,7 +2,7 @@ use common::{BitcoinClient, BitcoinProvider, Config, Result};
 use common::starknet::StarknetBridgeClient;
 use std::sync::Arc;
 use tokio::sync::mpsc;
-use tracing::info;
+use tracing::{error, info, warn};
 use tracing_subscriber;
 
 mod actors;
@@ -57,8 +57,12 @@ async fn main() -> Result<()> {
     // Spawn Bitcoin Monitor actor
     let bitcoin_monitor = BitcoinMonitorActor::new(
         config.bitcoin_multisig_address.clone(),
+        config.min_confirmations,
+        config.bitcoin_poll_interval_secs,
         bitcoin_client_arc,
         deposit_tx.clone(),
+        config.bitcoin_poll_interval_secs,
+        config.min_confirmations,
     );
     let bitcoin_monitor_handle = tokio::spawn(async move {
         bitcoin_monitor.run(bitcoin_monitor_rx).await;
@@ -109,23 +113,35 @@ async fn main() -> Result<()> {
 
     // Send Stop messages to all actors
     // Bitcoin Monitor and Starknet Monitor get Stop on their control channels
-    let _ = bitcoin_monitor_tx.send(BitcoinMonitorMsg::Stop).await;
-    let _ = starknet_monitor_tx.send(StarknetMonitorMsg::Stop).await;
+    if bitcoin_monitor_tx.send(BitcoinMonitorMsg::Stop).await.is_err() {
+        warn!("Bitcoin Monitor channel closed — actor may have panicked");
+    }
+    if starknet_monitor_tx.send(StarknetMonitorMsg::Stop).await.is_err() {
+        warn!("Starknet Monitor channel closed — actor may have panicked");
+    }
 
     // Deposit Processor and PSBT Signer get Stop on their data+control channels
-    let _ = deposit_tx.send(DepositProcessorMsg::Stop).await;
-    let _ = psbt_tx.send(PsbtSignerMsg::Stop).await;
+    if deposit_tx.send(DepositProcessorMsg::Stop).await.is_err() {
+        warn!("Deposit Processor channel closed — actor may have panicked");
+    }
+    if psbt_tx.send(PsbtSignerMsg::Stop).await.is_err() {
+        warn!("PSBT Signer channel closed — actor may have panicked");
+    }
 
     info!("Stop signals sent to all actors");
 
-    // Give actors time to finish current operations
-    tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
-
-    // Drop handles to ensure actors complete
-    drop(bitcoin_monitor_handle);
-    drop(deposit_processor_handle);
-    drop(starknet_monitor_handle);
-    drop(psbt_signer_handle);
+    // Wait for actors to complete gracefully with timeout
+    match tokio::time::timeout(tokio::time::Duration::from_secs(10), async {
+        let _ = tokio::join!(
+            bitcoin_monitor_handle,
+            deposit_processor_handle,
+            starknet_monitor_handle,
+            psbt_signer_handle,
+        );
+    }).await {
+        Ok(_) => info!("All actors stopped cleanly"),
+        Err(_) => error!("Actor shutdown timed out after 10 seconds"),
+    }
 
     info!("Watcher-signer service stopped");
 
