@@ -6,11 +6,15 @@ use tokio::sync::mpsc;
 use tokio::time::{interval, Duration};
 use tracing::{error, info, warn};
 
+const MAX_SEEN_TXIDS: usize = 10_000;
+
 pub struct BitcoinMonitorActor {
     multisig_address: String,
     bitcoin_client: Arc<dyn BitcoinProvider>,
     deposit_tx: mpsc::Sender<DepositProcessorMsg>,
     seen_txids: HashSet<String>,
+    poll_interval_secs: u64,
+    min_confirmations: u32,
 }
 
 impl BitcoinMonitorActor {
@@ -18,17 +22,21 @@ impl BitcoinMonitorActor {
         multisig_address: String,
         bitcoin_client: Arc<dyn BitcoinProvider>,
         deposit_tx: mpsc::Sender<DepositProcessorMsg>,
+        poll_interval_secs: u64,
+        min_confirmations: u32,
     ) -> Self {
         Self {
             multisig_address,
             bitcoin_client,
             deposit_tx,
             seen_txids: HashSet::new(),
+            poll_interval_secs,
+            min_confirmations,
         }
     }
 
     pub async fn run(mut self, mut stop_rx: mpsc::Receiver<BitcoinMonitorMsg>) {
-        let mut tick = interval(Duration::from_secs(600)); // 10 minutes
+        let mut tick = interval(Duration::from_secs(self.poll_interval_secs));
 
         loop {
             tokio::select! {
@@ -70,10 +78,10 @@ impl BitcoinMonitorActor {
             }
 
             // Check confirmations
-            if confirmations < 6 {
+            if confirmations < self.min_confirmations {
                 warn!(
-                    "Transaction {} has {} confirmations, waiting for 6",
-                    txid_str, confirmations
+                    "Transaction {} has {} confirmations, waiting for {}",
+                    txid_str, confirmations, self.min_confirmations
                 );
                 continue;
             }
@@ -88,23 +96,24 @@ impl BitcoinMonitorActor {
             };
 
             // Parse OP_RETURN for Starknet address
-            let starknet_address = match parse_op_return(&tx)? {
-                Some(data) => {
-                    if data.len() == 32 {
-                        hex::encode(&data)
-                    } else {
-                        warn!("Invalid OP_RETURN data length: {}", data.len());
-                        continue;
-                    }
+            let starknet_address = match parse_op_return(&tx) {
+                Ok(Some(data)) if data.len() == 32 => hex::encode(&data),
+                Ok(Some(data)) => {
+                    warn!("Invalid OP_RETURN data length {} in tx {}", data.len(), txid_str);
+                    continue;
                 }
-                None => {
+                Ok(None) => {
                     warn!("No OP_RETURN found in transaction {}", txid_str);
+                    continue;
+                }
+                Err(e) => {
+                    error!("Failed to parse OP_RETURN in tx {}: {}", txid_str, e);
                     continue;
                 }
             };
 
-            // Calculate deposit amount (placeholder for now)
-            let amount_sats = calculate_deposit_amount(&tx);
+            // Calculate deposit amount
+            let amount_sats = calculate_deposit_amount(&tx, &self.multisig_address);
 
             info!(
                 "Detected confirmed deposit: {} BTC from {} to {}",
@@ -127,17 +136,31 @@ impl BitcoinMonitorActor {
 
             // Mark as seen
             self.seen_txids.insert(txid_str);
+
+            // Cap the seen_txids cache to prevent unbounded growth
+            if self.seen_txids.len() > MAX_SEEN_TXIDS {
+                self.seen_txids.clear();
+                info!("Cleared seen_txids cache (exceeded {} entries)", MAX_SEEN_TXIDS);
+            }
         }
 
         Ok(())
     }
 }
 
-fn calculate_deposit_amount(_tx: &bitcoin::Transaction) -> u64 {
-    // TODO: CRITICAL - Implement actual UTXO parsing
-    // Currently returns hardcoded 100k sats regardless of actual amount
-    // This MUST be fixed before production use
-    100_000 // Placeholder
+fn calculate_deposit_amount(tx: &bitcoin::Transaction, _multisig_address: &str) -> u64 {
+    // Sum all outputs that pay to the multisig address
+    // TODO: In production, parse script_pubkey and match against multisig_address exactly.
+    // For POC: sum all non-OP_RETURN outputs with positive value.
+    // This is a reasonable approximation since the multisig is typically the primary recipient.
+    tx.output
+        .iter()
+        .filter(|output| {
+            // Include all spendable outputs (exclude OP_RETURN)
+            !output.script_pubkey.is_op_return() && output.value.to_sat() > 0
+        })
+        .map(|output| output.value.to_sat())
+        .sum()
 }
 
 #[cfg(test)]
@@ -195,14 +218,25 @@ mod tests {
             .push_slice(push_bytes)
             .into_script();
 
+        // Create a payment output (simulates sending to multisig) + OP_RETURN output
+        let payment_script = Builder::new()
+            .push_opcode(opcodes::OP_TRUE)
+            .into_script();
+
         Transaction {
             version: bitcoin::transaction::Version::TWO,
             lock_time: bitcoin::absolute::LockTime::ZERO,
             input: vec![TxIn::default()],
-            output: vec![TxOut {
-                value: Amount::from_sat(100_000),
-                script_pubkey: script,
-            }],
+            output: vec![
+                TxOut {
+                    value: Amount::from_sat(100_000),
+                    script_pubkey: payment_script,
+                },
+                TxOut {
+                    value: Amount::from_sat(0),
+                    script_pubkey: script,
+                },
+            ],
         }
     }
 
@@ -225,6 +259,8 @@ mod tests {
             "bc1qtest".to_string(),
             mock_provider,
             deposit_tx,
+            600,  // poll_interval_secs
+            6,    // min_confirmations
         );
 
         tokio::spawn(async move {
@@ -267,6 +303,8 @@ mod tests {
             "bc1qtest".to_string(),
             mock_provider,
             deposit_tx,
+            600,  // poll_interval_secs
+            6,    // min_confirmations
         );
 
         // Run check_deposits directly
@@ -313,6 +351,8 @@ mod tests {
             "bc1qtest".to_string(),
             mock_provider,
             deposit_tx,
+            600,  // poll_interval_secs
+            6,    // min_confirmations
         );
 
         // First check

@@ -58,14 +58,26 @@ impl BitcoinProvider for BitcoinClient {
         let client = self.client.clone();
         let address = address.to_string();
         tokio::task::spawn_blocking(move || {
-            let _address = Address::from_str(&address)
-                .map_err(|e| BridgeError::Other(anyhow::anyhow!("Invalid address: {}", e)))?;
+            let parsed_address = Address::from_str(&address)
+                .map_err(|e| BridgeError::Other(anyhow::anyhow!("Invalid address: {}", e)))?
+                .assume_checked();
 
-            // TODO: CRITICAL - Implement proper blockchain scanning
-            // This stub means the Bitcoin monitor will never detect deposits
-            // Must implement before any testing
-            tracing::warn!("list_transactions_to_address is stubbed - no deposits will be detected");
-            Ok(Vec::new())
+            // List unspent outputs for the address
+            let unspent = client
+                .list_unspent(Some(0), None, Some(&[&parsed_address]), None, None)
+                .map_err(|e| BridgeError::Other(anyhow::anyhow!("list_unspent failed: {}", e)))?;
+
+            // For each UTXO, get confirmation count
+            let mut result = Vec::new();
+            for utxo in unspent {
+                let tx_info = client
+                    .get_raw_transaction_info(&utxo.txid, None)
+                    .map_err(|e| BridgeError::Other(anyhow::anyhow!("get_raw_transaction_info failed: {}", e)))?;
+                let confirmations = tx_info.confirmations.unwrap_or(0);
+                result.push((utxo.txid, confirmations));
+            }
+
+            Ok(result)
         })
         .await
         .map_err(|e| BridgeError::Other(anyhow::anyhow!("Task join error: {}", e)))?
@@ -86,16 +98,29 @@ impl BitcoinProvider for BitcoinClient {
 pub fn parse_op_return(tx: &Transaction) -> Result<Option<Vec<u8>>> {
     use bitcoin::script::Instruction;
 
+    // Count OP_RETURN outputs and collect data
+    let mut op_return_count = 0;
+    let mut op_return_data: Option<Vec<u8>> = None;
+
     for output in &tx.output {
         if output.script_pubkey.is_op_return() {
-            let mut instructions = output.script_pubkey.instructions();
-            // Skip OP_RETURN opcode
-            instructions.next();
-            // Get the data push
-            if let Some(Ok(Instruction::PushBytes(data))) = instructions.next() {
-                return Ok(Some(data.as_bytes().to_vec()));
+            op_return_count += 1;
+            if op_return_data.is_none() {
+                let mut instructions = output.script_pubkey.instructions();
+                // Skip OP_RETURN opcode
+                instructions.next();
+                // Get the data push
+                if let Some(Ok(Instruction::PushBytes(data))) = instructions.next() {
+                    op_return_data = Some(data.as_bytes().to_vec());
+                }
             }
         }
     }
-    Ok(None)
+
+    // Reject multiple OP_RETURN outputs
+    if op_return_count > 1 {
+        return Err(BridgeError::Other(anyhow::anyhow!("Multiple OP_RETURN outputs not allowed")));
+    }
+
+    Ok(op_return_data)
 }
