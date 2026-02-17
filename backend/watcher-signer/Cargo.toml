@@ -9,3 +9,6 @@ tokio = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+hex = "0.4"
+bitcoin = "0.31"
+async-trait = "0.1"
