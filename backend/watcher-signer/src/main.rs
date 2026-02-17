@@ -2,6 +2,8 @@ use common::{Config, Result};
 use tracing::info;
 use tracing_subscriber;
 
+mod actors;
+
 #[tokio::main]
 async fn main() -> Result<()> {
     // Initialize tracing
