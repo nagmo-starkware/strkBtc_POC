@@ -12,3 +12,6 @@ tokio = { workspace = true }
 tracing = { workspace = true }
 bitcoin = "0.31"
 bitcoincore-rpc = "0.18"
+starknet = { workspace = true }
+async-trait = { workspace = true }
+reqwest = { workspace = true }
