@@ -1,5 +1,11 @@
 use starknet::ContractAddress;
 
+// Token interface for minting
+#[starknet::interface]
+trait IStrkBTC<TContractState> {
+    fn mint(ref self: TContractState, recipient: ContractAddress, amount: u256);
+}
+
 #[starknet::interface]
 trait IBridgeCore<TContractState> {
     fn add_committee_member(ref self: TContractState, member: ContractAddress);
@@ -10,6 +16,12 @@ trait IBridgeCore<TContractState> {
     fn add_starknet_whitelist(ref self: TContractState, starknet_address: ContractAddress);
     fn remove_starknet_whitelist(ref self: TContractState, starknet_address: ContractAddress);
     fn update_minimum_withdrawal(ref self: TContractState, new_minimum: u256);
+    fn deposit_request(
+        ref self: TContractState,
+        btc_tx_hash: felt252,
+        starknet_address: ContractAddress,
+        amount: u256
+    );
 }
 
 #[starknet::contract]
@@ -25,6 +37,7 @@ mod BridgeCore {
     use starkware_utils::components::replaceability::ReplaceabilityComponent;
     use starkware_utils::components::replaceability::ReplaceabilityComponent::InternalReplaceabilityTrait;
     use starkware_utils::components::roles::RolesComponent;
+    use super::{IStrkBTCDispatcher, IStrkBTCDispatcherTrait};
 
     component!(path: OwnableComponent, storage: ownable, event: OwnableEvent);
     component!(path: ReplaceabilityComponent, storage: replaceability, event: ReplaceabilityEvent);
@@ -292,6 +305,101 @@ mod BridgeCore {
             self.minimum_withdrawal_amount.write(new_minimum);
 
             self.emit(MinimumWithdrawalUpdated { old_minimum, new_minimum });
+        }
+
+        // ============================================
+        // Deposit Functions
+        // ============================================
+
+        /// Committee member submits a deposit request
+        /// Multiple committee members must sign the same deposit
+        /// Automatically mints when threshold is reached
+        fn deposit_request(
+            ref self: ContractState,
+            btc_tx_hash: felt252,
+            starknet_address: ContractAddress,
+            amount: u256
+        ) {
+            // Only committee members can submit
+            self._assert_committee_member();
+
+            // Check if already processed
+            let is_processed = self.processed_deposits.entry(btc_tx_hash).read();
+            assert(!is_processed, 'Deposit already processed');
+
+            // Check if caller already signed
+            let caller = starknet::get_caller_address();
+            let already_signed = self.deposit_signatures.entry((btc_tx_hash, caller)).read();
+            assert(!already_signed, 'Already signed this deposit');
+
+            // Get current signature count
+            let current_count = self.deposit_signature_count.entry(btc_tx_hash).read();
+
+            if current_count == 0 {
+                // First signature - store the deposit data
+                self._set_pending_deposit(btc_tx_hash, starknet_address, amount);
+            } else {
+                // Subsequent signatures - validate data matches
+                let stored_address = self.pending_deposit_starknet_address.entry(btc_tx_hash).read();
+                let stored_amount = self.pending_deposit_amount.entry(btc_tx_hash).read();
+
+                assert(stored_address == starknet_address, 'Address mismatch');
+                assert(stored_amount == amount, 'Amount mismatch');
+            }
+
+            // Record this signature
+            self.deposit_signatures.entry((btc_tx_hash, caller)).write(true);
+            let new_count = current_count + 1;
+            self.deposit_signature_count.entry(btc_tx_hash).write(new_count);
+
+            // Check if threshold reached
+            let threshold = self.signature_threshold.read();
+            if new_count >= threshold {
+                self._execute_mint(btc_tx_hash, starknet_address, amount);
+            }
+        }
+    }
+
+    // ============================================
+    // Internal Functions
+    // ============================================
+
+    #[generate_trait]
+    impl InternalImpl of InternalTrait {
+        /// Assert that caller is a committee member
+        fn _assert_committee_member(ref self: ContractState) {
+            let caller = starknet::get_caller_address();
+            let is_member = self.committee_members.entry(caller).read();
+            assert(is_member, 'Not a committee member');
+        }
+
+        fn _set_pending_deposit(
+            ref self: ContractState,
+            btc_tx_hash: felt252,
+            starknet_address: ContractAddress,
+            amount: u256
+        ) {
+            self.pending_deposit_starknet_address.entry(btc_tx_hash).write(starknet_address);
+            self.pending_deposit_amount.entry(btc_tx_hash).write(amount);
+        }
+
+        /// Execute the mint after threshold is reached
+        fn _execute_mint(
+            ref self: ContractState,
+            btc_tx_hash: felt252,
+            starknet_address: ContractAddress,
+            amount: u256
+        ) {
+            // Mark as processed
+            self.processed_deposits.entry(btc_tx_hash).write(true);
+
+            // Call token contract to mint
+            let token_address = self.token_address.read();
+            let token_dispatcher = IStrkBTCDispatcher { contract_address: token_address };
+            token_dispatcher.mint(starknet_address, amount);
+
+            // Emit event
+            self.emit(DepositProcessed { btc_tx_hash, starknet_address, amount });
         }
     }
 }
