@@ -6,6 +6,7 @@ name = "btc_bridge"
 version = "0.1.0"
 dependencies = [
  "openzeppelin",
+ "starkware_utils",
 ]
 
 [[package]]
@@ -126,3 +127,12 @@ name = "openzeppelin_utils"
 version = "1.0.0"
 source = "registry+https://scarbs.xyz/"
 checksum = "sha256:fd348b31c4a4407add33adc3c2b8f26dca71dbd7431faaf726168f37a91db0c1"
+
+[[package]]
+name = "starkware_utils"
+version = "1.0.0"
+source = "registry+https://scarbs.xyz/"
+checksum = "sha256:7bc9acf0dfa1c120ccff58b17bdb7814c8f59b2b56877b439c0900b4af6c025d"
+dependencies = [
+ "openzeppelin",
+]
