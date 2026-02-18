@@ -1,3 +1,17 @@
+use starknet::ContractAddress;
+
+#[starknet::interface]
+trait IBridgeCore<TContractState> {
+    fn add_committee_member(ref self: TContractState, member: ContractAddress);
+    fn remove_committee_member(ref self: TContractState, member: ContractAddress);
+    fn update_threshold(ref self: TContractState, new_threshold: u32);
+    fn add_btc_whitelist(ref self: TContractState, btc_address: felt252);
+    fn remove_btc_whitelist(ref self: TContractState, btc_address: felt252);
+    fn add_starknet_whitelist(ref self: TContractState, starknet_address: ContractAddress);
+    fn remove_starknet_whitelist(ref self: TContractState, starknet_address: ContractAddress);
+    fn update_minimum_withdrawal(ref self: TContractState, new_minimum: u256);
+}
+
 #[starknet::contract]
 mod BridgeCore {
     use core::num::traits::Zero;
@@ -5,7 +19,9 @@ mod BridgeCore {
     use openzeppelin::access::ownable::OwnableComponent;
     use openzeppelin::introspection::src5::SRC5Component;
     use starknet::ContractAddress;
-    use starknet::storage::{Map, StoragePointerWriteAccess};
+    use starknet::storage::{
+        Map, StoragePointerReadAccess, StoragePointerWriteAccess, StoragePathEntry
+    };
     use starkware_utils::components::replaceability::ReplaceabilityComponent;
     use starkware_utils::components::replaceability::ReplaceabilityComponent::InternalReplaceabilityTrait;
     use starkware_utils::components::roles::RolesComponent;
@@ -29,7 +45,31 @@ mod BridgeCore {
 
     #[storage]
     struct Storage {
-        // component inherited storage
+        // Token and registry addresses
+        token_address: ContractAddress,
+        registry_address: ContractAddress,
+
+        // Committee configuration
+        committee_members: Map<ContractAddress, bool>,
+        committee_count: u32,
+        signature_threshold: u32,
+
+        // Whitelists
+        btc_whitelist: Map<felt252, bool>,
+        starknet_whitelist: Map<ContractAddress, bool>,
+
+        // Deposit tracking
+        processed_deposits: Map<felt252, bool>,
+        deposit_signatures: Map<(felt252, ContractAddress), bool>,
+        deposit_signature_count: Map<felt252, u32>,
+
+        // Pending deposits data
+        pending_deposit_starknet_address: Map<felt252, ContractAddress>,
+        pending_deposit_amount: Map<felt252, u256>,
+
+        // Configuration
+        minimum_withdrawal_amount: u256,
+
         #[substorage(v0)]
         ownable: OwnableComponent::Storage,
         #[substorage(v0)]
@@ -40,32 +80,20 @@ mod BridgeCore {
         accesscontrol: AccessControlComponent::Storage,
         #[substorage(v0)]
         src5: SRC5Component::Storage,
-        // custom storage
-        // Token and registry addresses
-        token_address: ContractAddress,
-        registry_address: ContractAddress,
-        // Committee configuration
-        committee_members: Map<ContractAddress, bool>,
-        committee_count: u32,
-        signature_threshold: u32,
-        // Whitelists
-        btc_whitelist: Map<felt252, bool>,
-        starknet_whitelist: Map<ContractAddress, bool>,
-        // Deposit tracking
-        processed_deposits: Map<felt252, bool>,
-        deposit_signatures: Map<(felt252, ContractAddress), bool>,
-        deposit_signature_count: Map<felt252, u32>,
-        // Pending deposits data
-        pending_deposit_starknet_address: Map<felt252, ContractAddress>,
-        pending_deposit_amount: Map<felt252, u256>,
-        // Configuration
-        minimum_withdrawal_amount: u256,
     }
 
     #[event]
     #[derive(Drop, starknet::Event)]
     enum Event {
-        // component events
+        DepositProcessed: DepositProcessed,
+        WithdrawalRequested: WithdrawalRequested,
+        CommitteeMemberAdded: CommitteeMemberAdded,
+        CommitteeMemberRemoved: CommitteeMemberRemoved,
+        ThresholdUpdated: ThresholdUpdated,
+        BtcAddressWhitelisted: BtcAddressWhitelisted,
+        BtcAddressRemovedFromWhitelist: BtcAddressRemovedFromWhitelist,
+        StarknetAddressWhitelisted: StarknetAddressWhitelisted,
+        StarknetAddressRemovedFromWhitelist: StarknetAddressRemovedFromWhitelist,
         #[flat]
         OwnableEvent: OwnableComponent::Event,
         #[flat]
@@ -76,16 +104,6 @@ mod BridgeCore {
         AccessControlEvent: AccessControlComponent::Event,
         #[flat]
         SRC5Event: SRC5Component::Event,
-        // custom events
-        DepositProcessed: DepositProcessed,
-        WithdrawalRequested: WithdrawalRequested,
-        CommitteeMemberAdded: CommitteeMemberAdded,
-        CommitteeMemberRemoved: CommitteeMemberRemoved,
-        ThresholdUpdated: ThresholdUpdated,
-        BtcAddressWhitelisted: BtcAddressWhitelisted,
-        BtcAddressRemovedFromWhitelist: BtcAddressRemovedFromWhitelist,
-        StarknetAddressWhitelisted: StarknetAddressWhitelisted,
-        StarknetAddressRemovedFromWhitelist: StarknetAddressRemovedFromWhitelist,
     }
 
     #[derive(Drop, starknet::Event)]
@@ -161,5 +179,109 @@ mod BridgeCore {
         self.registry_address.write(registry_address);
         self.signature_threshold.write(initial_threshold);
         self.minimum_withdrawal_amount.write(minimum_withdrawal);
+    }
+
+    // ============================================
+    // Admin Functions
+    // ============================================
+
+    #[abi(embed_v0)]
+    impl BridgeCoreImpl of super::IBridgeCore<ContractState> {
+        fn add_committee_member(ref self: ContractState, member: ContractAddress) {
+            self.ownable.assert_only_owner();
+
+            let is_member = self.committee_members.entry(member).read();
+            assert(!is_member, 'Member already exists');
+
+            self.committee_members.entry(member).write(true);
+            let new_count = self.committee_count.read() + 1;
+            self.committee_count.write(new_count);
+
+            self.emit(CommitteeMemberAdded { member });
+        }
+
+        fn remove_committee_member(ref self: ContractState, member: ContractAddress) {
+            self.ownable.assert_only_owner();
+
+            let is_member = self.committee_members.entry(member).read();
+            assert(is_member, 'Member does not exist');
+
+            let current_count = self.committee_count.read();
+            let threshold = self.signature_threshold.read();
+
+            // Ensure threshold is still achievable
+            assert(current_count - 1 >= threshold, 'Would break threshold');
+
+            self.committee_members.entry(member).write(false);
+            self.committee_count.write(current_count - 1);
+
+            self.emit(CommitteeMemberRemoved { member });
+        }
+
+        fn update_threshold(ref self: ContractState, new_threshold: u32) {
+            self.ownable.assert_only_owner();
+
+            assert(new_threshold > 0, 'Threshold must be positive');
+
+            let committee_count = self.committee_count.read();
+            assert(new_threshold <= committee_count, 'Threshold exceeds members');
+
+            let old_threshold = self.signature_threshold.read();
+            self.signature_threshold.write(new_threshold);
+
+            self.emit(ThresholdUpdated { old_threshold, new_threshold });
+        }
+
+        fn add_btc_whitelist(ref self: ContractState, btc_address: felt252) {
+            self.ownable.assert_only_owner();
+
+            let is_whitelisted = self.btc_whitelist.entry(btc_address).read();
+            assert(!is_whitelisted, 'BTC address already whitelisted');
+
+            self.btc_whitelist.entry(btc_address).write(true);
+
+            self.emit(BtcAddressWhitelisted { btc_address });
+        }
+
+        fn remove_btc_whitelist(ref self: ContractState, btc_address: felt252) {
+            self.ownable.assert_only_owner();
+
+            let is_whitelisted = self.btc_whitelist.entry(btc_address).read();
+            assert(is_whitelisted, 'BTC address not whitelisted');
+
+            self.btc_whitelist.entry(btc_address).write(false);
+
+            self.emit(BtcAddressRemovedFromWhitelist { btc_address });
+        }
+
+        fn add_starknet_whitelist(ref self: ContractState, starknet_address: ContractAddress) {
+            self.ownable.assert_only_owner();
+
+            let is_whitelisted = self.starknet_whitelist.entry(starknet_address).read();
+            assert(!is_whitelisted, 'Address already whitelisted');
+
+            self.starknet_whitelist.entry(starknet_address).write(true);
+
+            self.emit(StarknetAddressWhitelisted { starknet_address });
+        }
+
+        fn remove_starknet_whitelist(ref self: ContractState, starknet_address: ContractAddress) {
+            self.ownable.assert_only_owner();
+
+            let is_whitelisted = self.starknet_whitelist.entry(starknet_address).read();
+            assert(is_whitelisted, 'Address not whitelisted');
+
+            self.starknet_whitelist.entry(starknet_address).write(false);
+
+            self.emit(StarknetAddressRemovedFromWhitelist { starknet_address });
+        }
+
+        fn update_minimum_withdrawal(ref self: ContractState, new_minimum: u256) {
+            self.ownable.assert_only_owner();
+
+            assert(new_minimum > 0, 'Minimum must be positive');
+
+            self.minimum_withdrawal_amount.write(new_minimum);
+        }
     }
 }
