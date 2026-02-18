@@ -8,9 +8,15 @@ starknet = "2.15.0"
 openzeppelin = "1.0.0"
 starkware_utils = "1.0.0"
 
+[dev-dependencies]
+snforge_std = "0.56.0"
+
 [[target.starknet-contract]]
 sierra = true
 casm = true
 
 [tool.snforge]
 exit_first = true
+
+[tool.scarb]
+allow-prebuilt-plugins = ["snforge_std"]
