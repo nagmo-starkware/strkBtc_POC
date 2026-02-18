@@ -73,6 +73,7 @@ mod StrkBTC {
 
     #[constructor]
     fn constructor(ref self: ContractState, owner: ContractAddress, bridge: ContractAddress) {
+        assert(bridge != Zero::zero(), 'Bridge cannot be zero address');
         self.erc20.initializer("Starknet BTC", "strkBTC");
         self.ownable.initializer(owner);
         self.replaceability.initialize(upgrade_delay: Zero::zero());
@@ -88,7 +89,14 @@ mod StrkBTC {
     #[external(v0)]
     fn burn(ref self: ContractState, from: ContractAddress, amount: u256) {
         self._assert_only_bridge();
+        let caller = starknet::get_caller_address();
+        self.erc20._spend_allowance(from, caller, amount);
         self.erc20.burn(from, amount);
+    }
+
+    #[external(v0)]
+    fn get_bridge(self: @ContractState) -> ContractAddress {
+        self.bridge_address.read()
     }
 
     #[generate_trait]
