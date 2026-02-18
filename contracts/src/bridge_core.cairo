@@ -4,6 +4,7 @@ use starknet::ContractAddress;
 #[starknet::interface]
 trait IStrkBTC<TContractState> {
     fn mint(ref self: TContractState, recipient: ContractAddress, amount: u256);
+    fn burn(ref self: TContractState, from: ContractAddress, amount: u256);
 }
 
 #[starknet::interface]
@@ -22,6 +23,15 @@ trait IBridgeCore<TContractState> {
         starknet_address: ContractAddress,
         amount: u256
     );
+    fn withdraw(ref self: TContractState, btc_address: felt252, amount: u256);
+    fn is_btc_whitelisted(self: @TContractState, btc_address: felt252) -> bool;
+    fn is_starknet_whitelisted(self: @TContractState, address: ContractAddress) -> bool;
+    fn is_committee_member(self: @TContractState, address: ContractAddress) -> bool;
+    fn get_signature_threshold(self: @TContractState) -> u32;
+    fn get_committee_count(self: @TContractState) -> u32;
+    fn get_minimum_withdrawal(self: @TContractState) -> u256;
+    fn is_deposit_processed(self: @TContractState, btc_tx_hash: felt252) -> bool;
+    fn get_deposit_signature_count(self: @TContractState, btc_tx_hash: felt252) -> u32;
 }
 
 #[starknet::contract]
@@ -132,9 +142,9 @@ mod BridgeCore {
     struct WithdrawalRequested {
         #[key]
         request_id: felt252,
+        starknet_address: ContractAddress,
         btc_address: felt252,
         amount: u256,
-        starknet_tx_hash: felt252,
     }
 
     #[derive(Drop, starknet::Event)]
@@ -357,6 +367,74 @@ mod BridgeCore {
             if new_count >= threshold {
                 self._execute_mint(btc_tx_hash, starknet_address, amount);
             }
+        }
+
+        // ============================================
+        // Withdrawal Functions
+        // ============================================
+
+        fn withdraw(ref self: ContractState, btc_address: felt252, amount: u256) {
+            let caller = starknet::get_caller_address();
+
+            // Check caller is whitelisted
+            let is_whitelisted = self.starknet_whitelist.entry(caller).read();
+            assert(is_whitelisted, 'Address not whitelisted');
+
+            // Check amount meets minimum
+            let minimum = self.minimum_withdrawal_amount.read();
+            assert(amount >= minimum, 'Amount below minimum');
+
+            // Burn tokens
+            let token_address = self.token_address.read();
+            let token_dispatcher = IStrkBTCDispatcher { contract_address: token_address };
+            token_dispatcher.burn(caller, amount);
+
+            // Emit withdrawal event for backends to process
+            let tx_info = starknet::get_tx_info().unbox();
+            self.emit(
+                WithdrawalRequested {
+                    request_id: tx_info.transaction_hash,
+                    starknet_address: caller,
+                    btc_address,
+                    amount,
+                }
+            );
+        }
+
+        // ============================================
+        // View Functions
+        // ============================================
+
+        fn is_btc_whitelisted(self: @ContractState, btc_address: felt252) -> bool {
+            self.btc_whitelist.entry(btc_address).read()
+        }
+
+        fn is_starknet_whitelisted(self: @ContractState, address: ContractAddress) -> bool {
+            self.starknet_whitelist.entry(address).read()
+        }
+
+        fn is_committee_member(self: @ContractState, address: ContractAddress) -> bool {
+            self.committee_members.entry(address).read()
+        }
+
+        fn get_signature_threshold(self: @ContractState) -> u32 {
+            self.signature_threshold.read()
+        }
+
+        fn get_committee_count(self: @ContractState) -> u32 {
+            self.committee_count.read()
+        }
+
+        fn get_minimum_withdrawal(self: @ContractState) -> u256 {
+            self.minimum_withdrawal_amount.read()
+        }
+
+        fn is_deposit_processed(self: @ContractState, btc_tx_hash: felt252) -> bool {
+            self.processed_deposits.entry(btc_tx_hash).read()
+        }
+
+        fn get_deposit_signature_count(self: @ContractState, btc_tx_hash: felt252) -> u32 {
+            self.deposit_signature_count.entry(btc_tx_hash).read()
         }
     }
 
