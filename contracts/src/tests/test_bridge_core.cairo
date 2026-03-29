@@ -16,6 +16,12 @@ mod tests {
         fn add_starknet_whitelist(ref self: TContractState, starknet_address: ContractAddress);
         fn remove_starknet_whitelist(ref self: TContractState, starknet_address: ContractAddress);
         fn update_minimum_withdrawal(ref self: TContractState, new_minimum: u256);
+        fn deposit_request(
+            ref self: TContractState,
+            btc_tx_hash: felt252,
+            starknet_address: ContractAddress,
+            amount: u256
+        );
     }
 
     fn deploy_bridge(
@@ -445,5 +451,112 @@ mod tests {
 
         start_cheat_caller_address(bridge_address, attacker);
         bridge.add_committee_member(member);
+    }
+
+    // ========== NEW TESTS FOR COMMIT 9 (deposit_request) ==========
+
+    #[test]
+    fn test_deposit_request_single_signature() {
+        let owner: ContractAddress = 'owner'.try_into().unwrap();
+        let token: ContractAddress = 'token'.try_into().unwrap();
+        let registry: ContractAddress = 'registry'.try_into().unwrap();
+        let member1: ContractAddress = 'member1'.try_into().unwrap();
+        let member2: ContractAddress = 'member2'.try_into().unwrap();
+        let recipient: ContractAddress = 'recipient'.try_into().unwrap();
+
+        let bridge_address = deploy_bridge(owner, token, registry, 2, 100000);
+        let bridge = IBridgeCoreDispatcher { contract_address: bridge_address };
+
+        // Setup: add 2 committee members, threshold 2
+        start_cheat_caller_address(bridge_address, owner);
+        bridge.add_committee_member(member1);
+        bridge.add_committee_member(member2);
+        stop_cheat_caller_address(bridge_address);
+
+        let btc_tx_hash: felt252 = 'btc_tx_123';
+
+        // First signature (doesn't reach threshold, no mint should happen)
+        start_cheat_caller_address(bridge_address, member1);
+        bridge.deposit_request(btc_tx_hash, recipient, 1000);
+        stop_cheat_caller_address(bridge_address);
+
+        // No panic = success (deposit recorded but not processed)
+    }
+
+    #[test]
+    #[should_panic(expected: ('Already signed this deposit',))]
+    fn test_deposit_request_already_signed_fails() {
+        let owner: ContractAddress = 'owner'.try_into().unwrap();
+        let token: ContractAddress = 'token'.try_into().unwrap();
+        let registry: ContractAddress = 'registry'.try_into().unwrap();
+        let member1: ContractAddress = 'member1'.try_into().unwrap();
+        let member2: ContractAddress = 'member2'.try_into().unwrap();
+        let recipient: ContractAddress = 'recipient'.try_into().unwrap();
+
+        let bridge_address = deploy_bridge(owner, token, registry, 2, 100000);
+        let bridge = IBridgeCoreDispatcher { contract_address: bridge_address };
+
+        start_cheat_caller_address(bridge_address, owner);
+        bridge.add_committee_member(member1);
+        bridge.add_committee_member(member2);
+        stop_cheat_caller_address(bridge_address);
+
+        let btc_tx_hash: felt252 = 'btc_tx_123';
+
+        // First signature
+        start_cheat_caller_address(bridge_address, member1);
+        bridge.deposit_request(btc_tx_hash, recipient, 1000);
+
+        // Try to sign again (same member, same tx_hash)
+        bridge.deposit_request(btc_tx_hash, recipient, 1000);
+    }
+
+    #[test]
+    #[should_panic(expected: ('Not a committee member',))]
+    fn test_deposit_request_non_committee_fails() {
+        let owner: ContractAddress = 'owner'.try_into().unwrap();
+        let token: ContractAddress = 'token'.try_into().unwrap();
+        let registry: ContractAddress = 'registry'.try_into().unwrap();
+        let attacker: ContractAddress = 'attacker'.try_into().unwrap();
+        let recipient: ContractAddress = 'recipient'.try_into().unwrap();
+
+        let bridge_address = deploy_bridge(owner, token, registry, 2, 100000);
+        let bridge = IBridgeCoreDispatcher { contract_address: bridge_address };
+
+        let btc_tx_hash: felt252 = 'btc_tx_123';
+
+        // Try to sign as non-member
+        start_cheat_caller_address(bridge_address, attacker);
+        bridge.deposit_request(btc_tx_hash, recipient, 1000);
+    }
+
+    #[test]
+    #[should_panic(expected: ('Amount mismatch',))]
+    fn test_deposit_request_data_mismatch_fails() {
+        let owner: ContractAddress = 'owner'.try_into().unwrap();
+        let token: ContractAddress = 'token'.try_into().unwrap();
+        let registry: ContractAddress = 'registry'.try_into().unwrap();
+        let member1: ContractAddress = 'member1'.try_into().unwrap();
+        let member2: ContractAddress = 'member2'.try_into().unwrap();
+        let recipient: ContractAddress = 'recipient'.try_into().unwrap();
+
+        let bridge_address = deploy_bridge(owner, token, registry, 2, 100000);
+        let bridge = IBridgeCoreDispatcher { contract_address: bridge_address };
+
+        start_cheat_caller_address(bridge_address, owner);
+        bridge.add_committee_member(member1);
+        bridge.add_committee_member(member2);
+        stop_cheat_caller_address(bridge_address);
+
+        let btc_tx_hash: felt252 = 'btc_tx_123';
+
+        // First signature with amount 1000
+        start_cheat_caller_address(bridge_address, member1);
+        bridge.deposit_request(btc_tx_hash, recipient, 1000);
+        stop_cheat_caller_address(bridge_address);
+
+        // Second signature with DIFFERENT amount (2000)
+        start_cheat_caller_address(bridge_address, member2);
+        bridge.deposit_request(btc_tx_hash, recipient, 2000);
     }
 }
