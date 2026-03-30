@@ -5,7 +5,7 @@ mod tests {
     use starknet::SyscallResultTrait;
     use snforge_std::{declare, ContractClassTrait, DeclareResultTrait, start_cheat_caller_address, stop_cheat_caller_address};
 
-    // Interface for commit 7 - admin functions only
+    // Interface for commit 10 - adds withdraw and view functions
     #[starknet::interface]
     trait IBridgeCore<TContractState> {
         fn add_committee_member(ref self: TContractState, member: ContractAddress);
@@ -22,6 +22,15 @@ mod tests {
             starknet_address: ContractAddress,
             amount: u256
         );
+        fn withdraw(ref self: TContractState, btc_address: felt252, amount: u256);
+        fn is_btc_whitelisted(self: @TContractState, btc_address: felt252) -> bool;
+        fn is_starknet_whitelisted(self: @TContractState, address: ContractAddress) -> bool;
+        fn is_committee_member(self: @TContractState, address: ContractAddress) -> bool;
+        fn get_signature_threshold(self: @TContractState) -> u32;
+        fn get_committee_count(self: @TContractState) -> u32;
+        fn get_minimum_withdrawal(self: @TContractState) -> u256;
+        fn is_deposit_processed(self: @TContractState, btc_tx_hash: felt252) -> bool;
+        fn get_deposit_signature_count(self: @TContractState, btc_tx_hash: felt252) -> u32;
     }
 
     fn deploy_bridge(
@@ -61,6 +70,8 @@ mod tests {
         let deploy_address: ContractAddress = 0x999.try_into().unwrap();
         bridge_contract.deploy_at(@args, deploy_address).unwrap_syscall();
     }
+
+    // ========== ALL TESTS FROM COMMIT 7 (baseline) ==========
 
     #[test]
     fn test_bridge_core_deploys() {
@@ -156,6 +167,10 @@ mod tests {
         start_cheat_caller_address(bridge_address, owner);
         bridge.add_committee_member(member);
         stop_cheat_caller_address(bridge_address);
+
+        // Now we can verify with view function
+        assert(bridge.is_committee_member(member), 'Should be member');
+        assert(bridge.get_committee_count() == 1, 'Wrong count');
     }
 
     #[test]
@@ -194,6 +209,12 @@ mod tests {
         // Remove one member (3 members, threshold 2, so safe)
         bridge.remove_committee_member(member3);
         stop_cheat_caller_address(bridge_address);
+
+        // Verify with view functions
+        assert(bridge.is_committee_member(member1), 'member1 should exist');
+        assert(bridge.is_committee_member(member2), 'member2 should exist');
+        assert(!bridge.is_committee_member(member3), 'member3 should be removed');
+        assert(bridge.get_committee_count() == 2, 'Wrong count after removal');
     }
 
     #[test]
@@ -251,6 +272,9 @@ mod tests {
         // Update threshold to 3 (3 members present)
         bridge.update_threshold(3);
         stop_cheat_caller_address(bridge_address);
+
+        // Verify with view function
+        assert(bridge.get_signature_threshold() == 3, 'Wrong threshold');
     }
 
     #[test]
@@ -298,6 +322,9 @@ mod tests {
         start_cheat_caller_address(bridge_address, owner);
         bridge.add_btc_whitelist(btc_address);
         stop_cheat_caller_address(bridge_address);
+
+        // Verify with view function
+        assert(bridge.is_btc_whitelisted(btc_address), 'Should be whitelisted');
     }
 
     #[test]
@@ -330,6 +357,9 @@ mod tests {
         bridge.add_btc_whitelist(btc_address);
         bridge.remove_btc_whitelist(btc_address);
         stop_cheat_caller_address(bridge_address);
+
+        // Verify with view function
+        assert(!bridge.is_btc_whitelisted(btc_address), 'Should not be whitelisted');
     }
 
     #[test]
@@ -360,6 +390,9 @@ mod tests {
         start_cheat_caller_address(bridge_address, owner);
         bridge.add_starknet_whitelist(starknet_address);
         stop_cheat_caller_address(bridge_address);
+
+        // Verify with view function
+        assert(bridge.is_starknet_whitelisted(starknet_address), 'Should be whitelisted');
     }
 
     #[test]
@@ -392,6 +425,9 @@ mod tests {
         bridge.add_starknet_whitelist(starknet_address);
         bridge.remove_starknet_whitelist(starknet_address);
         stop_cheat_caller_address(bridge_address);
+
+        // Verify with view function
+        assert(!bridge.is_starknet_whitelisted(starknet_address), 'Should not be whitelisted');
     }
 
     #[test]
@@ -421,6 +457,9 @@ mod tests {
         start_cheat_caller_address(bridge_address, owner);
         bridge.update_minimum_withdrawal(200000);
         stop_cheat_caller_address(bridge_address);
+
+        // Verify with view function
+        assert(bridge.get_minimum_withdrawal() == 200000, 'Wrong minimum');
     }
 
     #[test]
@@ -453,7 +492,7 @@ mod tests {
         bridge.add_committee_member(member);
     }
 
-    // ========== NEW TESTS FOR COMMIT 9 (deposit_request) ==========
+    // ========== TESTS FROM COMMIT 9 (deposit_request) ==========
 
     #[test]
     fn test_deposit_request_single_signature() {
@@ -480,7 +519,9 @@ mod tests {
         bridge.deposit_request(btc_tx_hash, recipient, 1000);
         stop_cheat_caller_address(bridge_address);
 
-        // No panic = success (deposit recorded but not processed)
+        // Verify state with view functions
+        assert(bridge.get_deposit_signature_count(btc_tx_hash) == 1, 'Wrong sig count');
+        assert(!bridge.is_deposit_processed(btc_tx_hash), 'Should not be processed');
     }
 
     #[test]
@@ -558,5 +599,148 @@ mod tests {
         // Second signature with DIFFERENT amount (2000)
         start_cheat_caller_address(bridge_address, member2);
         bridge.deposit_request(btc_tx_hash, recipient, 2000);
+    }
+
+    // ========== NEW TESTS FOR COMMIT 10 (view functions and withdraw) ==========
+
+    #[test]
+    fn test_initial_state() {
+        let owner: ContractAddress = 'owner'.try_into().unwrap();
+        let token: ContractAddress = 'token'.try_into().unwrap();
+        let registry: ContractAddress = 'registry'.try_into().unwrap();
+
+        let bridge_address = deploy_bridge(owner, token, registry, 2, 100000);
+        let bridge = IBridgeCoreDispatcher { contract_address: bridge_address };
+
+        assert(bridge.get_signature_threshold() == 2, 'Wrong threshold');
+        assert(bridge.get_committee_count() == 0, 'Wrong initial count');
+        assert(bridge.get_minimum_withdrawal() == 100000, 'Wrong minimum');
+    }
+
+    #[test]
+    fn test_view_committee_member() {
+        let owner: ContractAddress = 'owner'.try_into().unwrap();
+        let token: ContractAddress = 'token'.try_into().unwrap();
+        let registry: ContractAddress = 'registry'.try_into().unwrap();
+        let member: ContractAddress = 'member'.try_into().unwrap();
+        let non_member: ContractAddress = 'non_member'.try_into().unwrap();
+
+        let bridge_address = deploy_bridge(owner, token, registry, 2, 100000);
+        let bridge = IBridgeCoreDispatcher { contract_address: bridge_address };
+
+        assert(!bridge.is_committee_member(member), 'Should not be member');
+
+        start_cheat_caller_address(bridge_address, owner);
+        bridge.add_committee_member(member);
+        stop_cheat_caller_address(bridge_address);
+
+        assert(bridge.is_committee_member(member), 'Should be member');
+        assert(!bridge.is_committee_member(non_member), 'Should not be member');
+        assert(bridge.get_committee_count() == 1, 'Wrong count');
+    }
+
+    #[test]
+    fn test_view_btc_whitelist() {
+        let owner: ContractAddress = 'owner'.try_into().unwrap();
+        let token: ContractAddress = 'token'.try_into().unwrap();
+        let registry: ContractAddress = 'registry'.try_into().unwrap();
+        let btc_address: felt252 = 'bc1qxy2kgdygjrsqtzq2n0yrf24';
+
+        let bridge_address = deploy_bridge(owner, token, registry, 2, 100000);
+        let bridge = IBridgeCoreDispatcher { contract_address: bridge_address };
+
+        assert(!bridge.is_btc_whitelisted(btc_address), 'Should not be whitelisted');
+
+        start_cheat_caller_address(bridge_address, owner);
+        bridge.add_btc_whitelist(btc_address);
+        stop_cheat_caller_address(bridge_address);
+
+        assert(bridge.is_btc_whitelisted(btc_address), 'Should be whitelisted');
+    }
+
+    #[test]
+    fn test_view_starknet_whitelist() {
+        let owner: ContractAddress = 'owner'.try_into().unwrap();
+        let token: ContractAddress = 'token'.try_into().unwrap();
+        let registry: ContractAddress = 'registry'.try_into().unwrap();
+        let user: ContractAddress = 'user'.try_into().unwrap();
+
+        let bridge_address = deploy_bridge(owner, token, registry, 2, 100000);
+        let bridge = IBridgeCoreDispatcher { contract_address: bridge_address };
+
+        assert(!bridge.is_starknet_whitelisted(user), 'Should not be whitelisted');
+
+        start_cheat_caller_address(bridge_address, owner);
+        bridge.add_starknet_whitelist(user);
+        stop_cheat_caller_address(bridge_address);
+
+        assert(bridge.is_starknet_whitelisted(user), 'Should be whitelisted');
+    }
+
+    #[test]
+    fn test_view_deposit_state() {
+        let owner: ContractAddress = 'owner'.try_into().unwrap();
+        let token: ContractAddress = 'token'.try_into().unwrap();
+        let registry: ContractAddress = 'registry'.try_into().unwrap();
+        let member1: ContractAddress = 'member1'.try_into().unwrap();
+        let recipient: ContractAddress = 'recipient'.try_into().unwrap();
+
+        let bridge_address = deploy_bridge(owner, token, registry, 2, 100000);
+        let bridge = IBridgeCoreDispatcher { contract_address: bridge_address };
+
+        start_cheat_caller_address(bridge_address, owner);
+        bridge.add_committee_member(member1);
+        stop_cheat_caller_address(bridge_address);
+
+        let btc_tx_hash: felt252 = 'btc_tx_123';
+
+        assert(!bridge.is_deposit_processed(btc_tx_hash), 'Should not be processed');
+        assert(bridge.get_deposit_signature_count(btc_tx_hash) == 0, 'Wrong sig count');
+
+        start_cheat_caller_address(bridge_address, member1);
+        bridge.deposit_request(btc_tx_hash, recipient, 1000);
+        stop_cheat_caller_address(bridge_address);
+
+        assert(bridge.get_deposit_signature_count(btc_tx_hash) == 1, 'Wrong sig count');
+    }
+
+    #[test]
+    #[should_panic(expected: ('Address not whitelisted',))]
+    fn test_withdraw_not_whitelisted_fails() {
+        let owner: ContractAddress = 'owner'.try_into().unwrap();
+        let token: ContractAddress = 'token'.try_into().unwrap();
+        let registry: ContractAddress = 'registry'.try_into().unwrap();
+        let user: ContractAddress = 'user'.try_into().unwrap();
+        let btc_address: felt252 = 'bc1qxy2kgdygjrsqtzq2n0yrf24';
+
+        let bridge_address = deploy_bridge(owner, token, registry, 2, 100000);
+        let bridge = IBridgeCoreDispatcher { contract_address: bridge_address };
+
+        // Try to withdraw without being whitelisted
+        start_cheat_caller_address(bridge_address, user);
+        bridge.withdraw(btc_address, 150000);
+    }
+
+    #[test]
+    #[should_panic(expected: ('Amount below minimum',))]
+    fn test_withdraw_below_minimum_fails() {
+        let owner: ContractAddress = 'owner'.try_into().unwrap();
+        let token: ContractAddress = 'token'.try_into().unwrap();
+        let registry: ContractAddress = 'registry'.try_into().unwrap();
+        let user: ContractAddress = 'user'.try_into().unwrap();
+        let btc_address: felt252 = 'bc1qxy2kgdygjrsqtzq2n0yrf24';
+
+        let bridge_address = deploy_bridge(owner, token, registry, 2, 100000);
+        let bridge = IBridgeCoreDispatcher { contract_address: bridge_address };
+
+        // Whitelist user first
+        start_cheat_caller_address(bridge_address, owner);
+        bridge.add_starknet_whitelist(user);
+        bridge.add_btc_whitelist(btc_address);
+        stop_cheat_caller_address(bridge_address);
+
+        // Try to withdraw below minimum (100000)
+        start_cheat_caller_address(bridge_address, user);
+        bridge.withdraw(btc_address, 50000);
     }
 }
