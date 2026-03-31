@@ -94,6 +94,7 @@ mod BridgeCore {
         BtcAddressRemovedFromWhitelist: BtcAddressRemovedFromWhitelist,
         StarknetAddressWhitelisted: StarknetAddressWhitelisted,
         StarknetAddressRemovedFromWhitelist: StarknetAddressRemovedFromWhitelist,
+        MinimumWithdrawalUpdated: MinimumWithdrawalUpdated,
         #[flat]
         OwnableEvent: OwnableComponent::Event,
         #[flat]
@@ -157,6 +158,12 @@ mod BridgeCore {
     #[derive(Drop, starknet::Event)]
     struct StarknetAddressRemovedFromWhitelist {
         starknet_address: ContractAddress,
+    }
+
+    #[derive(Drop, starknet::Event)]
+    struct MinimumWithdrawalUpdated {
+        old_minimum: u256,
+        new_minimum: u256,
     }
 
     #[constructor]
@@ -281,7 +288,10 @@ mod BridgeCore {
 
             assert(new_minimum > 0, 'Minimum must be positive');
 
+            let old_minimum = self.minimum_withdrawal_amount.read();
             self.minimum_withdrawal_amount.write(new_minimum);
+
+            self.emit(MinimumWithdrawalUpdated { old_minimum, new_minimum });
         }
     }
 }
