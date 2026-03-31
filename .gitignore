@@ -4,6 +4,7 @@
 
 # Cairo / Starknet
 /contracts/target/
+/contracts/.snfoundry_cache/
 
 # Environment
 .env
